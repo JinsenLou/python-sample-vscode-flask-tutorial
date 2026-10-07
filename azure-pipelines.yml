@@ -1,37 +1,97 @@
-# Python package
-# Create and test a Python package on multiple Python versions.
-# Add steps that analyze code, save the dist with the build record, publish to a PyPI-compatible index, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/python
-
 trigger:
 - main
 
-pool:
-  vmImage: ubuntu-latest
+variables:
+  azureServiceConnection: 'sc-rg-test-daniel'
+  webAppName: 'web-app-test-daniel'
+  vmImageName: 'ubuntu-24.04'
 
-strategy:
-  matrix:
-    Python38:
-      python.version: '3.8'
-    Python39:
-      python.version: '3.9'
-    Python310:
-      python.version: '3.10'
-    Python311:
-      python.version: '3.11'
+stages:
+- stage: Test
+  displayName: Test
+  jobs:
+  - job: PythonTests
+    displayName: Python tests
+    pool:
+      vmImage: $(vmImageName)
 
-steps:
-- task: UsePythonVersion@0
-  inputs:
-    versionSpec: '$(python.version)'
-  displayName: 'Use Python $(python.version)'
+    strategy:
+      matrix:
+        #Python38:
+        #  python.version: '3.8'
+        #Python39:
+        #  python.version: '3.9'
+        #Python310:
+        #  python.version: '3.10'
+        Python311:
+          python.version: '3.11'
+        Python312:
+          python.version: '3.12'
 
-- script: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-  displayName: 'Install dependencies'
+    steps:
+    - task: UsePythonVersion@0
+      displayName: 'Use Python $(python.version)'
+      inputs:
+        versionSpec: '$(python.version)'
 
-- script: |
-    pip install pytest pytest-azurepipelines
-    pytest
-  displayName: 'pytest'
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: Install dependencies
+
+    - script: |
+        pip install pytest pytest-azurepipelines
+        pytest
+      displayName: Run pytest
+
+- stage: Package
+  displayName: Package application
+  dependsOn: Test
+  condition: succeeded()
+
+  jobs:
+  - job: CreatePackage
+    displayName: Create deployment package
+    pool:
+      vmImage: $(vmImageName)
+
+    steps:
+    - task: ArchiveFiles@2
+      displayName: Create deployment ZIP
+      inputs:
+        rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+        replaceExistingArchive: true
+
+    - publish: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+      displayName: Publish deployment artifact
+      artifact: drop
+
+- stage: Deploy
+  displayName: Deploy to Azure App Service
+  dependsOn: Package
+  condition: succeeded()
+
+  jobs:
+  - deployment: DeployWebApp
+    displayName: Deploy web-app-test-daniel
+    pool:
+      vmImage: $(vmImageName)
+
+    environment: 'web-app-test-daniel'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebApp@1
+            displayName: Deploy Flask application
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              appType: 'webAppLinux'
+              appName: '$(webAppName)'
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              runtimeStack: 'PYTHON|3.12'
+              startUpCommand: 'startup.txt'
